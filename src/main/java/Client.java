@@ -2,6 +2,7 @@ import com.google.gson.Gson;
 
 import java.io.*;
 import java.net.Socket;
+import java.net.SocketException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -28,32 +29,47 @@ public class Client {
             printWriter = new PrintWriter(outputStream, true);
             inputStream = clientSocket.getInputStream();
             inputStreamReader = new InputStreamReader(inputStream);
-            readHeader(inputStream);
-            String helloMessage = bufferedReader.readLine();
-            System.out.println(helloMessage);
             register(outputStream, inputStream);
             readAndWrite();
             clientSocket.close();
         }
         catch (Exception e) {
+            e.printStackTrace();
         }
     }
 
     private static void register(OutputStream outputStream, InputStream inputStream) throws IOException {
-        String name = scanner.nextLine();
-        outputStream.write(createHeader(name, false, true, false, false, 0));
-        printWriter.println(name);
-        String zone = ZoneId.systemDefault().toString();
-        outputStream.write(createHeader(zone, false, true, false, false, 0));
-        printWriter.println(zone);
-        readHeader(inputStream);
-        String registerAcceptMessage = bufferedReader.readLine();
-        System.out.println(registerAcceptMessage);
-    }
+        Gson gson = new Gson();
 
-    public static int readHeader(InputStream inputStream) throws IOException {
+        String name = scanner.nextLine();
+        Message messageName = new Message(null, null, name, null);
+        String strName = gson.toJson(messageName);
+        byte[] byteName = strName.getBytes();
+        byte[] byteHeaderName = concat(createHeader(strName, false, true, false, false, 0), byteName);
+
+        String zone = ZoneId.systemDefault().toString();
+        Message messageZone = new Message(null, null, zone, null);
+        String strZone = gson.toJson(messageZone);
+        byte[] byteZone = strZone.getBytes();
+        byte[] byteHeaderZone = concat(createHeader(strZone, false, true, false, false, 0), byteZone);
+        outputStream.write(concat(byteHeaderZone, byteHeaderName));
         byte[] bytes = new byte[12];
         inputStream.read(bytes, 0, 12);
+        readHeader(bytes);
+        int size = readMessageSizeHeader(bytes);
+        byte[] hello = new byte[size];
+        inputStream.read(hello);
+        Message message = gson.fromJson(new String(hello), Message.class);
+        writeString(message);
+    }
+
+    public static byte[] concat(byte[] first, byte[] second) {
+        byte[] result = Arrays.copyOf(first, first.length + second.length);
+        System.arraycopy(second, 0, result, first.length, second.length);
+        return result;
+    }
+
+    public static int readHeader(byte[] bytes) throws IOException {
         byte[] size = new byte[4];
         System.arraycopy(bytes, 8, size, 0, 4);
         return byteArrayBigToInt(size);
@@ -102,45 +118,62 @@ public class Client {
         return b ? 1 : 0;
     }
 
+    public static int readMessageSizeHeader(byte[] data) throws IOException {
+        byte[] size = new byte[2];
+        System.arraycopy(data, 2, size, 0, 2);
+        return byteArraySmallToInt(size);
+    }
+
+    public static final int byteArraySmallToInt(byte[] bytes) {
+        return (bytes[0] & 0xFF) << 8 | (bytes[1] & 0xFF);
+    }
+
     private static void readAndWrite() throws IOException {
         Thread messageListener = new Thread(()->{
             try {
                 while (on){
-                    int length = readHeader(inputStream);
+                    byte[] bytes = new byte[12];
+                    inputStream.read(bytes, 0, 12);
+                    int length = readHeader(bytes);
                     byte[] fileInBytes = new byte[length];
                     inputStream.read(fileInBytes);
-                    String message = bufferedReader.readLine();
+                    byte[] bytesMessage = new byte[readMessageSizeHeader(bytes)];
+                    inputStream.read(bytesMessage);
+                    String message = new String(bytesMessage);
                     Gson gson = new Gson();
                     Message messageObject = gson.fromJson(message, Message.class);
-                    System.out.println("<" + messageObject.getTime() + "> " + "[" + messageObject.getName() + "] " + messageObject.getMessage());
+                    writeString(messageObject);
                     if (fileInBytes.length != 0){
                         Path destinationFile = Paths.get("files/"+messageObject.getMessage().split("Файл передан:")[1].trim());
                         Files.write(destinationFile, fileInBytes);
                     }
                 }
             } catch (IOException e) {
-                e.printStackTrace();
                 on = false;
             }
         });
         messageListener.start();
         while (on){
+            Gson gson = new Gson();
             String message = scanner.nextLine();
             if (message.contains("--file")){
                 File file = new File(message.split("--file")[1].trim());
                 byte[] fileInBytes = Files.readAllBytes(file.toPath());
                 Message messageObject = new Message(null, null,"Файл передан: " + file.getName(), null);
-                byte[] header = createHeader(message, false, false, false, true, fileInBytes.length);
-                outputStream.write(header);
-                outputStream.write(fileInBytes);
-                printWriter.println(new Gson().toJson(messageObject));
+                String messageStr = gson.toJson(messageObject);
+                byte[] header = createHeader(messageStr, false, false, false, true, fileInBytes.length);
+                outputStream.write(concat(concat(header, fileInBytes), messageStr.getBytes()));
             } else {
                 Message messageObject = new Message(null, null, message, null);
-                outputStream.write(createHeader(message, false, false, message.equals("/qqq"), false, 0));
-                printWriter.println(new Gson().toJson(messageObject));
+                String messageStr = gson.toJson(messageObject);
+                outputStream.write(concat(createHeader(messageStr, false, false, message.equals("/qqq"), false, 0), messageStr.getBytes()));
             }
             if (message.equals("/qqq")) on = false;
         }
+    }
+
+    private static void writeString(Message messageObject){
+        System.out.println("<" + messageObject.getTime().substring(0, 8) + "> " + "[" + messageObject.getName() + "] " + messageObject.getMessage());
     }
 }
 
